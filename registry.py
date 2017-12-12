@@ -33,6 +33,7 @@ import argparse
 
 # number of image versions to keep
 CONST_KEEP_LAST_VERSIONS = 10
+CONST_V2_HEADER = {"Accept": "application/vnd.docker.distribution.manifest.v2+json"}
 
 # this class is created for testing
 class Requests:
@@ -98,11 +99,11 @@ class Registry:
         return r
 
 
-    def send(self, path, method="GET"):
+    def send(self, path, method="GET", headers=CONST_V2_HEADER):
         # try:
         result = self.http.request(
             method, "{0}{1}".format(self.hostname, path),
-            headers = self.HEADERS,
+            headers=headers,
             auth=(None if self.username == ""
                   else (self.username, self.password)),
             verify = not self.no_validate_ssl)
@@ -222,6 +223,24 @@ class Registry:
 
         return layers
 
+    def get_tag_date(self,tag,image_name):
+        image_headers = self.send("/v2/{0}/manifests/{1}".format(
+            image_name, tag), method="GET", headers={"Accept": "application/vnd.docker.distribution.manifest.v1+json"})
+
+        if image_headers is None:
+            print("  tag digest not found: {0}".format(self.last_error))
+            return None
+
+        return json.loads(json.loads(image_headers.text)["history"][0]["v1Compatibility"])["created"]
+
+
+    def sort_tags_date(self,all_tags_list,image_name):
+        result = {}
+        for tag in all_tags_list:
+            result[tag] = self.get_tag_date(tag,image_name)
+        return sorted(result, key=result.get)
+
+
 def parse_args(args = None):
     parser = argparse.ArgumentParser(
         description="List or delete images from Docker registry",
@@ -282,7 +301,7 @@ for more detail on garbage collection read here:
         '-i','--image',
         help='Specify images and tags to list/delete',
         nargs='+',
-        metavar="IMAGE:[TAG]")    
+        metavar="IMAGE:[TAG]")
 
     parser.add_argument(
         '--keep-tags',
@@ -307,7 +326,7 @@ for more detail on garbage collection read here:
 
     parser.add_argument(
         '--no-validate-ssl',
-        help="Disable ssl validation",        
+        help="Disable ssl validation",
         action='store_const',
         default=False,
         const=True)
@@ -326,7 +345,7 @@ for more detail on garbage collection read here:
         default=False,
         const=True)
 
-    
+
     return parser.parse_args(args)
 
 
@@ -341,7 +360,7 @@ def delete_tags(
 
             print("Getting digest for tag {0}".format(tag))
             digest = registry.get_tag_digest(image_name, tag)
-            if digest is None:            
+            if digest is None:
                 print("Tag {0} does not exist for image {1}. Ignore here.".format(tag, image_name))
                 continue
 
@@ -355,9 +374,9 @@ def delete_tags(
 
         print("  deleting tag {0}".format(tag))
 
-##        deleting layers is disabled because 
+##        deleting layers is disabled because
 ##        it also deletes shared layers
-##        
+##
 ##        for layer in registry.list_tag_layers(image_name, tag):
 ##            layer_digest = layer['digest']
 ##            registry.delete_tag_layer(image_name, layer_digest, dry_run)
@@ -389,11 +408,12 @@ def get_tags(all_tags_list, image_name, tags_like):
 
     return result
 
+
 def main_loop(args):
 
     keep_last_versions = int(args.num)
 
-    if args.no_validate_ssl:        
+    if args.no_validate_ssl:
         requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
     registry = Registry.create(args.host, args.login, args.no_validate_ssl)
@@ -434,7 +454,7 @@ def main_loop(args):
         # add tags to "tags_to_keep" list, if we have regexp "tags_to_keep" entries:
         keep_tags=[]
         if args.keep_tags_like:
-            keep_tags.append(get_tags_like(args.keep_tags_like, tags_list))
+            keep_tags.extend(get_tags_like(args.keep_tags_like, tags_list))
 
 
         # delete tags if told so
@@ -442,8 +462,7 @@ def main_loop(args):
             if args.delete_all:
                 tags_list_to_delete = list(tags_list)
             else:
-                tags_list_to_delete = sorted(tags_list, key=natural_keys)[:-keep_last_versions]
-
+                tags_list_to_delete = registry.sort_tags_date(tags_list,image_name)[:-keep_last_versions]
                 # A manifest might be shared between different tags. Explicitly add those
                 # tags that we want to preserve to the keep_tags list, to prevent
                 # any manifest they are using from being deleted.
